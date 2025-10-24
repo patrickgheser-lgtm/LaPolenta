@@ -86,14 +86,19 @@ async def play(interaction: discord.Interaction, song_query: str):
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
 
-    ydl_options = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "extract_flat": False,
-        "geo_bypass": True,
-        "source_address": "0.0.0.0",
-    }
+   ytdl_opts = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'geo_bypass': True,
+    'nocheckcertificate': True,
+    'source_address': '0.0.0.0',
+    'extractor_retries': 5,
+    'noplaylist': True,
+    'default_search': 'ytsearch',
+    'age_limit': 0,
+    'extractor_args': {'youtube': {'player_client': ['android']}},
+}
+
 
     query = f"ytsearch1:{song_query}"
     print(f"🔎 Searching for: {song_query}")
