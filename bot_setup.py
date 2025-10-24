@@ -1,8 +1,8 @@
 # bot_setup.py
-# ----------------------------------------
-# Discord Music Bot (yt_dlp + FFmpeg)
-# Cloud-Ready Version (Railway / Render / Replit)
-# ----------------------------------------
+# ------------------------------------------------------
+# Discord Music Bot - Cloud Ready Version (Render / Replit / Railway)
+# Uses yt_dlp + FFmpeg + Flask keep-alive server
+# ------------------------------------------------------
 
 import os
 import discord
@@ -12,31 +12,59 @@ import yt_dlp
 from collections import deque
 import asyncio
 import concurrent.futures
-from keep_alive import keep_alive  # server web per pingarlo e tenerlo attivo
+from keep_alive import keep_alive  # mini webserver Flask
 
-# ----------------------------------------
-# TOKEN (preso dalle variabili d'ambiente)
-# ----------------------------------------
+# ------------------------------------------------------
+# Load Discord token
+# ------------------------------------------------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise ValueError("❌ Environment variable DISCORD_TOKEN not found.")
 
-# ----------------------------------------
-# Song queue per ogni server
-# ----------------------------------------
+# ------------------------------------------------------
+# Global queues
+# ------------------------------------------------------
 SONG_QUEUES = {}
 
+# ------------------------------------------------------
+# yt-dlp configuration with optional YouTube cookies
+# ------------------------------------------------------
+cookies_content = os.getenv("YOUTUBE_COOKIES")
+cookies_path = None
 
-# ----------------------------------------
-# Funzione di ricerca asincrona yt_dlp
-# ----------------------------------------
+if cookies_content:
+    cookies_path = "/tmp/youtube_cookies.txt"
+    with open(cookies_path, "w", encoding="utf-8") as f:
+        f.write(cookies_content)
+
+BASE_YTDL_OPTS = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'geo_bypass': True,
+    'nocheckcertificate': True,
+    'source_address': '0.0.0.0',
+    'extractor_retries': 5,
+    'noplaylist': True,
+    'default_search': 'ytsearch',
+    'age_limit': 0,
+    'extractor_args': {'youtube': {'player_client': ['android']}},
+}
+
+if cookies_path:
+    BASE_YTDL_OPTS['cookiefile'] = cookies_path
+    print("🍪 YouTube cookies loaded successfully.")
+
+
+# ------------------------------------------------------
+# yt-dlp async search
+# ------------------------------------------------------
 async def search_ytdlp_async(query, ydl_opts):
     loop = asyncio.get_running_loop()
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return await asyncio.wait_for(
                 loop.run_in_executor(pool, lambda: _extract(query, ydl_opts)),
-                timeout=10.0
+                timeout=15.0
             )
     except asyncio.TimeoutError:
         print(f"❌ [yt_dlp] Timeout while searching: {query}")
@@ -51,9 +79,9 @@ def _extract(query, ydl_opts):
         return ydl.extract_info(query, download=False)
 
 
-# ----------------------------------------
-# Setup del bot Discord
-# ----------------------------------------
+# ------------------------------------------------------
+# Discord bot setup
+# ------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -65,9 +93,9 @@ async def on_ready():
     print(f"✅ {bot.user} is online and slash commands are synced!")
 
 
-# ----------------------------------------
-# /play
-# ----------------------------------------
+# ------------------------------------------------------
+# /play command
+# ------------------------------------------------------
 @bot.tree.command(name="play", description="Play a song or add it to the queue.")
 @app_commands.describe(song_query="Search query or YouTube URL")
 async def play(interaction: discord.Interaction, song_query: str):
@@ -85,19 +113,7 @@ async def play(interaction: discord.Interaction, song_query: str):
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
 
-    # ✅ Indentazione corretta
-    ytdl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'geo_bypass': True,
-        'nocheckcertificate': True,
-        'source_address': '0.0.0.0',
-        'extractor_retries': 5,
-        'noplaylist': True,
-        'default_search': 'ytsearch',
-        'age_limit': 0,
-        'extractor_args': {'youtube': {'player_client': ['android']}},
-    }
+    ytdl_opts = BASE_YTDL_OPTS.copy()
 
     query = f"ytsearch1:{song_query}"
     print(f"🔎 Searching for: {song_query}")
@@ -128,9 +144,9 @@ async def play(interaction: discord.Interaction, song_query: str):
         await play_next_song(vc, guild_id, interaction.channel)
 
 
-# ----------------------------------------
-# /skip
-# ----------------------------------------
+# ------------------------------------------------------
+# /skip command
+# ------------------------------------------------------
 @bot.tree.command(name="skip", description="Skip the current song.")
 async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -141,9 +157,9 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Nothing is playing.")
 
 
-# ----------------------------------------
-# /pause
-# ----------------------------------------
+# ------------------------------------------------------
+# /pause command
+# ------------------------------------------------------
 @bot.tree.command(name="pause", description="Pause the current song.")
 async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -155,9 +171,9 @@ async def pause(interaction: discord.Interaction):
     await interaction.response.send_message("⏸️ Paused.")
 
 
-# ----------------------------------------
-# /resume
-# ----------------------------------------
+# ------------------------------------------------------
+# /resume command
+# ------------------------------------------------------
 @bot.tree.command(name="resume", description="Resume playback.")
 async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -169,9 +185,9 @@ async def resume(interaction: discord.Interaction):
     await interaction.response.send_message("▶️ Resumed.")
 
 
-# ----------------------------------------
-# /stop
-# ----------------------------------------
+# ------------------------------------------------------
+# /stop command
+# ------------------------------------------------------
 @bot.tree.command(name="stop", description="Stop playback and clear queue.")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -188,9 +204,9 @@ async def stop(interaction: discord.Interaction):
     await interaction.response.send_message("⏹️ Stopped playback and disconnected.")
 
 
-# ----------------------------------------
-# Funzione per suonare i brani in coda
-# ----------------------------------------
+# ------------------------------------------------------
+# Queue playback handler
+# ------------------------------------------------------
 async def play_next_song(vc, guild_id, channel):
     if SONG_QUEUES[guild_id]:
         audio_url, title = SONG_QUEUES[guild_id].popleft()
@@ -220,9 +236,9 @@ async def play_next_song(vc, guild_id, channel):
         SONG_QUEUES[guild_id] = deque()
 
 
-# ----------------------------------------
-# Avvio del web server + bot
-# ----------------------------------------
+# ------------------------------------------------------
+# Start Flask webserver + Discord bot
+# ------------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
     bot.run(TOKEN)
