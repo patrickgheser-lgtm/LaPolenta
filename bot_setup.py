@@ -27,7 +27,7 @@ if not TOKEN:
 SONG_QUEUES = {}
 
 # ------------------------------------------------------
-# yt-dlp configuration with optional YouTube cookies
+# yt-dlp configuration (cookies optional)
 # ------------------------------------------------------
 cookies_content = os.getenv("YOUTUBE_COOKIES")
 cookies_path = None
@@ -99,7 +99,8 @@ async def on_ready():
 @bot.tree.command(name="play", description="Play a song or add it to the queue.")
 @app_commands.describe(song_query="Search query or YouTube URL")
 async def play(interaction: discord.Interaction, song_query: str):
-    await interaction.response.defer()
+    # Defer early to avoid Discord 404
+    await interaction.response.defer(thinking=True)
 
     if not interaction.user.voice:
         await interaction.followup.send("❌ You must be in a voice channel.")
