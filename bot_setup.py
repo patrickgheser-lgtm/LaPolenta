@@ -34,7 +34,6 @@ async def search_ytdlp_async(query, ydl_opts):
     loop = asyncio.get_running_loop()
     try:
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            # Timeout di 10 secondi
             return await asyncio.wait_for(
                 loop.run_in_executor(pool, lambda: _extract(query, ydl_opts)),
                 timeout=10.0
@@ -86,23 +85,23 @@ async def play(interaction: discord.Interaction, song_query: str):
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
 
-   ytdl_opts = {
-    'format': 'bestaudio/best',
-    'quiet': True,
-    'geo_bypass': True,
-    'nocheckcertificate': True,
-    'source_address': '0.0.0.0',
-    'extractor_retries': 5,
-    'noplaylist': True,
-    'default_search': 'ytsearch',
-    'age_limit': 0,
-    'extractor_args': {'youtube': {'player_client': ['android']}},
-}
-
+    # ✅ Indentazione corretta
+    ytdl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'geo_bypass': True,
+        'nocheckcertificate': True,
+        'source_address': '0.0.0.0',
+        'extractor_retries': 5,
+        'noplaylist': True,
+        'default_search': 'ytsearch',
+        'age_limit': 0,
+        'extractor_args': {'youtube': {'player_client': ['android']}},
+    }
 
     query = f"ytsearch1:{song_query}"
     print(f"🔎 Searching for: {song_query}")
-    results = await search_ytdlp_async(query, ydl_options)
+    results = await search_ytdlp_async(query, ytdl_opts)
 
     if not results:
         await interaction.followup.send("❌ Could not fetch results. Try again later.")
@@ -225,5 +224,5 @@ async def play_next_song(vc, guild_id, channel):
 # Avvio del web server + bot
 # ----------------------------------------
 if __name__ == "__main__":
-    keep_alive()  # Avvia il mini server Flask per UptimeRobot
+    keep_alive()
     bot.run(TOKEN)
