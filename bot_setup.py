@@ -27,7 +27,7 @@ if not TOKEN:
 SONG_QUEUES = {}
 
 # ------------------------------------------------------
-# yt-dlp configuration (cookies optional)
+# yt-dlp configuration (with optional cookies)
 # ------------------------------------------------------
 cookies_content = os.getenv("YOUTUBE_COOKIES")
 cookies_path = None
@@ -52,7 +52,11 @@ BASE_YTDL_OPTS = {
 
 if cookies_path:
     BASE_YTDL_OPTS['cookiefile'] = cookies_path
-    print("🍪 YouTube cookies loaded successfully.")
+    # 🔧 Remove Android client when using cookies
+    BASE_YTDL_OPTS['extractor_args']['youtube'].pop('player_client', None)
+    print("🍪 YouTube cookies loaded successfully (web client mode).")
+else:
+    print("🔎 Using public YouTube access (android client).")
 
 
 # ------------------------------------------------------
@@ -64,7 +68,7 @@ async def search_ytdlp_async(query, ydl_opts):
         with concurrent.futures.ThreadPoolExecutor() as pool:
             return await asyncio.wait_for(
                 loop.run_in_executor(pool, lambda: _extract(query, ydl_opts)),
-                timeout=15.0
+                timeout=20.0
             )
     except asyncio.TimeoutError:
         print(f"❌ [yt_dlp] Timeout while searching: {query}")
@@ -99,50 +103,55 @@ async def on_ready():
 @bot.tree.command(name="play", description="Play a song or add it to the queue.")
 @app_commands.describe(song_query="Search query or YouTube URL")
 async def play(interaction: discord.Interaction, song_query: str):
-    # Defer early to avoid Discord 404
+    # 🕒 Immediate defer to avoid Unknown Interaction (404)
     await interaction.response.defer(thinking=True)
 
-    if not interaction.user.voice:
-        await interaction.followup.send("❌ You must be in a voice channel.")
-        return
+    try:
+        if not interaction.user.voice:
+            await interaction.followup.send("❌ You must be in a voice channel.")
+            return
 
-    voice_channel = interaction.user.voice.channel
-    vc = interaction.guild.voice_client
+        voice_channel = interaction.user.voice.channel
+        vc = interaction.guild.voice_client
 
-    if vc is None:
-        vc = await voice_channel.connect()
-    elif vc.channel != voice_channel:
-        await vc.move_to(voice_channel)
+        if vc is None:
+            vc = await voice_channel.connect()
+        elif vc.channel != voice_channel:
+            await vc.move_to(voice_channel)
 
-    ytdl_opts = BASE_YTDL_OPTS.copy()
+        ytdl_opts = BASE_YTDL_OPTS.copy()
 
-    query = f"ytsearch1:{song_query}"
-    print(f"🔎 Searching for: {song_query}")
-    results = await search_ytdlp_async(query, ytdl_opts)
+        query = f"ytsearch1:{song_query}"
+        print(f"🔎 Searching YouTube for: {song_query}")
+        results = await search_ytdlp_async(query, ytdl_opts)
 
-    if not results:
-        await interaction.followup.send("❌ Could not fetch results. Try again later.")
-        return
+        if not results:
+            await interaction.followup.send("❌ Could not fetch results. Try again later.")
+            return
 
-    tracks = results.get("entries", [])
-    if not tracks:
-        await interaction.followup.send("❌ No results found.")
-        return
+        tracks = results.get("entries", [])
+        if not tracks:
+            await interaction.followup.send("❌ No results found.")
+            return
 
-    first_track = tracks[0]
-    audio_url = first_track.get("url")
-    title = first_track.get("title", "Untitled")
+        first_track = tracks[0]
+        audio_url = first_track.get("url")
+        title = first_track.get("title", "Untitled")
 
-    print(f"🎵 Found: {title}")
+        print(f"🎵 Found: {title} | {audio_url}")
 
-    guild_id = str(interaction.guild_id)
-    SONG_QUEUES.setdefault(guild_id, deque()).append((audio_url, title))
+        guild_id = str(interaction.guild_id)
+        SONG_QUEUES.setdefault(guild_id, deque()).append((audio_url, title))
 
-    if vc.is_playing() or vc.is_paused():
-        await interaction.followup.send(f"➕ Added to queue: **{title}**")
-    else:
-        await interaction.followup.send(f"🎶 Now playing: **{title}**")
-        await play_next_song(vc, guild_id, interaction.channel)
+        if vc.is_playing() or vc.is_paused():
+            await interaction.followup.send(f"➕ Added to queue: **{title}**")
+        else:
+            await interaction.followup.send(f"🎶 Now playing: **{title}**")
+            await play_next_song(vc, guild_id, interaction.channel)
+
+    except Exception as e:
+        print(f"❌ Error in /play: {e}")
+        await interaction.followup.send(f"❌ Error: {e}")
 
 
 # ------------------------------------------------------
