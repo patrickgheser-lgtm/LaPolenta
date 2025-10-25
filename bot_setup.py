@@ -1,33 +1,51 @@
 # bot_setup.py
 # ----------------------------------------
-# Discord Music Bot (yt_dlp + FFmpeg)
-# Compatibile con PythonAnywhere / UptimeRobot
+# Discord Music Bot con supporto YouTube + Spotify
 # ----------------------------------------
 
 import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-import yt_dlp
 from collections import deque
+import yt_dlp
 import asyncio
 import concurrent.futures
 from keep_alive import keep_alive
 
-# ----------------------------------------
-# TOKEN (dal pannello Environment su PythonAnywhere)
-# ----------------------------------------
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ Environment variable DISCORD_TOKEN not found.")
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
 # ----------------------------------------
-# Coda musicale
+# Variabili ambiente
+# ----------------------------------------
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+if not DISCORD_TOKEN:
+    raise ValueError("❌ Variabile ambiente DISCORD_TOKEN non trovata.")
+
+# ----------------------------------------
+# Config Spotify API
+# ----------------------------------------
+sp = None
+if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
+        client_id=SPOTIFY_CLIENT_ID,
+        client_secret=SPOTIFY_CLIENT_SECRET
+    ))
+    print("🎧 Spotify API collegata con successo.")
+else:
+    print("⚠️ Spotify non configurato (nessuna variabile ambiente trovata).")
+
+# ----------------------------------------
+# Song queues per server
 # ----------------------------------------
 SONG_QUEUES = {}
 
 # ----------------------------------------
-# yt_dlp — ricerca asincrona
+# yt_dlp Async Helper
 # ----------------------------------------
 async def search_ytdlp_async(query, ydl_opts):
     loop = asyncio.get_running_loop()
@@ -41,13 +59,12 @@ async def search_ytdlp_async(query, ydl_opts):
         print(f"❌ yt_dlp error: {e}")
         return None
 
-
 def _extract(query, ydl_opts):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         return ydl.extract_info(query, download=False)
 
 # ----------------------------------------
-# Setup bot Discord
+# Discord Bot Setup
 # ----------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
@@ -59,11 +76,36 @@ async def on_ready():
     print(f"✅ {bot.user} è online e sincronizzato!")
 
 # ----------------------------------------
+# Funzione: estrai titoli da link Spotify
+# ----------------------------------------
+def get_spotify_tracks(url):
+    if not sp:
+        return []
+    tracks = []
+
+    try:
+        if "track" in url:
+            track = sp.track(url)
+            tracks.append(f"{track['name']} - {track['artists'][0]['name']}")
+        elif "playlist" in url:
+            results = sp.playlist_items(url)
+            for item in results['items']:
+                t = item['track']
+                tracks.append(f"{t['name']} - {t['artists'][0]['name']}")
+        elif "album" in url:
+            results = sp.album_tracks(url)
+            for t in results['items']:
+                tracks.append(f"{t['name']} - {t['artists'][0]['name']}")
+    except Exception as e:
+        print(f"❌ Errore Spotify: {e}")
+    return tracks
+
+# ----------------------------------------
 # /play
 # ----------------------------------------
-@bot.tree.command(name="play", description="Riproduci una canzone da YouTube")
-@app_commands.describe(song_query="Titolo o link YouTube")
-async def play(interaction: discord.Interaction, song_query: str):
+@bot.tree.command(name="play", description="Riproduci un brano o una playlist da YouTube o Spotify")
+@app_commands.describe(query="Titolo, link YouTube o link Spotify")
+async def play(interaction: discord.Interaction, query: str):
     await interaction.response.defer(thinking=True)
 
     if not interaction.user.voice:
@@ -78,110 +120,115 @@ async def play(interaction: discord.Interaction, song_query: str):
     elif vc.channel != voice_channel:
         await vc.move_to(voice_channel)
 
-    ytdl_opts = {
+    ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'geo_bypass': True,
         'nocheckcertificate': True,
         'source_address': '0.0.0.0',
+        'extractor_retries': 3,
         'noplaylist': True,
         'default_search': 'ytsearch',
         'age_limit': 0,
+        'extractor_args': {'youtube': {'player_client': ['android']}},
     }
 
-    results = await search_ytdlp_async(f"ytsearch1:{song_query}", ytdl_opts)
-    if not results or "entries" not in results:
+    guild_id = str(interaction.guild_id)
+    SONG_QUEUES.setdefault(guild_id, deque())
+
+    # --- Se è un link Spotify ---
+    if "open.spotify.com" in query:
+        tracks = get_spotify_tracks(query)
+        if not tracks:
+            await interaction.followup.send("❌ Nessun brano trovato su Spotify.")
+            return
+        await interaction.followup.send(f"🎧 Aggiungo {len(tracks)} brani da Spotify...")
+        for track in tracks:
+            yt_query = f"ytsearch1:{track}"
+            results = await search_ytdlp_async(yt_query, ydl_opts)
+            if results and results.get("entries"):
+                first = results["entries"][0]
+                SONG_QUEUES[guild_id].append((first["url"], first["title"]))
+        await play_next(vc, guild_id, interaction.channel)
+        return
+
+    # --- Altrimenti cerca su YouTube ---
+    results = await search_ytdlp_async(f"ytsearch1:{query}", ydl_opts)
+    if not results or not results.get("entries"):
         await interaction.followup.send("❌ Nessun risultato trovato.")
         return
 
-    track = results["entries"][0]
-    audio_url = track["url"]
-    title = track.get("title", "Sconosciuto")
+    first = results["entries"][0]
+    SONG_QUEUES[guild_id].append((first["url"], first["title"]))
+    await interaction.followup.send(f"🎶 Aggiunto alla coda: **{first['title']}**")
 
-    guild_id = str(interaction.guild_id)
-    SONG_QUEUES.setdefault(guild_id, deque()).append((audio_url, title))
-
-    if vc.is_playing() or vc.is_paused():
-        await interaction.followup.send(f"➕ Aggiunta alla coda: **{title}**")
-    else:
-        await interaction.followup.send(f"🎶 Riproduzione di: **{title}**")
-        await play_next_song(vc, guild_id, interaction.channel)
-
+    if not vc.is_playing():
+        await play_next(vc, guild_id, interaction.channel)
 
 # ----------------------------------------
 # /skip, /pause, /resume, /stop
 # ----------------------------------------
-@bot.tree.command(name="skip", description="Salta la canzone attuale")
+@bot.tree.command(name="skip", description="Salta il brano corrente.")
 async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.stop()
         await interaction.response.send_message("⏭️ Brano saltato.")
     else:
-        await interaction.response.send_message("❌ Nessuna canzone in riproduzione.")
+        await interaction.response.send_message("❌ Nessun brano in riproduzione.")
 
-
-@bot.tree.command(name="pause", description="Metti in pausa la canzone")
+@bot.tree.command(name="pause", description="Metti in pausa la riproduzione.")
 async def pause(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.pause()
-        await interaction.response.send_message("⏸️ Pausa.")
+        await interaction.response.send_message("⏸️ In pausa.")
     else:
-        await interaction.response.send_message("❌ Nessuna canzone da mettere in pausa.")
+        await interaction.response.send_message("❌ Nessun brano in riproduzione.")
 
-
-@bot.tree.command(name="resume", description="Riprendi la canzone")
+@bot.tree.command(name="resume", description="Riprendi la riproduzione.")
 async def resume(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_paused():
         vc.resume()
-        await interaction.response.send_message("▶️ Ripresa.")
+        await interaction.response.send_message("▶️ Ripreso.")
     else:
-        await interaction.response.send_message("❌ Nessuna canzone in pausa.")
+        await interaction.response.send_message("❌ Nessun brano in pausa.")
 
-
-@bot.tree.command(name="stop", description="Ferma e svuota la coda")
+@bot.tree.command(name="stop", description="Ferma la musica e disconnetti il bot.")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+    guild_id = str(interaction.guild_id)
+    SONG_QUEUES[guild_id].clear()
     if vc:
-        SONG_QUEUES[str(interaction.guild_id)] = deque()
         await vc.disconnect()
-        await interaction.response.send_message("⏹️ Fermato e disconnesso.")
-    else:
-        await interaction.response.send_message("❌ Non sono in nessun canale vocale.")
-
+    await interaction.response.send_message("⏹️ Fermato e disconnesso.")
 
 # ----------------------------------------
-# Riproduzione
+# Funzione riproduzione
 # ----------------------------------------
-async def play_next_song(vc, guild_id, channel):
+async def play_next(vc, guild_id, channel):
     if SONG_QUEUES[guild_id]:
         url, title = SONG_QUEUES[guild_id].popleft()
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn'
+        ffmpeg_opts = {
+            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+            "options": "-vn"
         }
-
         try:
-            source = discord.FFmpegOpusAudio(url, **ffmpeg_options)
-            vc.play(
-                source,
-                after=lambda e: asyncio.run_coroutine_threadsafe(
-                    play_next_song(vc, guild_id, channel), asyncio.get_event_loop()
-                ),
-            )
-            await channel.send(f"🎵 Ora in riproduzione: **{title}**")
+            source = discord.FFmpegOpusAudio(url, **ffmpeg_opts)
+            vc.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(
+                play_next(vc, guild_id, channel), asyncio.get_event_loop()))
+            await channel.send(f"🎵 In riproduzione: **{title}**")
         except Exception as e:
-            await channel.send(f"❌ Errore nella riproduzione: {e}")
+            await channel.send(f"❌ Errore nella riproduzione di {title}: {e}")
+            await play_next(vc, guild_id, channel)
     else:
         await channel.send("✅ Coda terminata.")
         await vc.disconnect()
 
-
 # ----------------------------------------
-# Avvio bot e server
+# Avvio server Flask + bot
 # ----------------------------------------
 if __name__ == "__main__":
     keep_alive()
-    bot.run(TOKEN)
+    bot.run(DISCORD_TOKEN)
